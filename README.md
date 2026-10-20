@@ -11,7 +11,7 @@ This repository provides an end-to-end, reproducible machine learning pipeline t
 * **Final Validation Set**: `assesiment/data/validation.csv` (12,000 loads requiring final predictions).
 * **Deliverables**:
   1. `validation_predictions.csv`: Filled predictions for all 12,000 loads (`load_id,predicted_rate`).
-  2. `december_predictions.csv` & `scorer_results/candidate_december.png`: Predicted rate curves for 31 December benchmark shipments.
+  2. `december_predictions.csv` & `results/candidate_december.png`: Predicted rate curves for 31 December benchmark shipments.
   3. Multi-seed evaluation results, visualizations, and pipeline source code.
 
 ---
@@ -108,7 +108,7 @@ Validation actuals vs. model predictions:
 
 ### December Fixed Predictions Chart
 Output of `assesiment/score.py` showing daily predicted rates for December shipments:
-![Candidate December Chart](scorer_results/candidate_december.png)
+![Candidate December Chart](results/candidate_december.png)
 
 ---
 
@@ -130,7 +130,7 @@ Output of `assesiment/score.py` showing daily predicted rates for December shipm
     ```
     Validated 12,000 final predictions.
     Validated 31 fixed December predictions.
-    Created chart: scorer_results/candidate_december.png
+    Created chart: results/candidate_december.png
     ```
 
 ---
@@ -157,5 +157,5 @@ python run_experiment.py --no-quote-signal
 ### Generate Final Submission Predictions & Scorer Chart
 ```bash
 python predict_submission.py --model ensemble
-python assesiment/score.py --predictions validation_predictions.csv --december-predictions december_predictions.csv
+python assesiment/score.py --predictions validation_predictions.csv --december-predictions december_predictions.csv --output-dir results
 ```
