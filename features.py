@@ -16,11 +16,6 @@ from data import calculate_bearing, haversine_distance
 
 
 class FeaturePipeline:
-    """
-    Feature engineering pipeline that fits strictly on train and transforms validation/test sets.
-    Prevents data leakage by computing all encoders, medians, scalers, and target encodings on train only.
-    """
-
     def __init__(
         self,
         use_quote_signal: bool = USE_QUOTE_SIGNAL,
@@ -33,7 +28,6 @@ class FeaturePipeline:
         self.n_splits = n_splits
         self.seed = seed
 
-        # Learned statistics from train
         self.medians_: dict[str, float] = {}
         self.global_target_mean_: float = 0.0
         self.lane_target_mapping_: dict[str, float] = {}
@@ -44,7 +38,6 @@ class FeaturePipeline:
         self.lgb_feature_names_: list[str] = []
 
     def _impute_numeric(self, df: pd.DataFrame, is_train: bool = False) -> pd.DataFrame:
-        """Impute missing numeric values using medians computed strictly from train."""
         df_out = df.copy()
         numeric_cols = ["weight", "market_index", "distance"]
         if self.use_quote_signal and "quote_signal" in df.columns:
@@ -63,10 +56,8 @@ class FeaturePipeline:
         return df_out
 
     def _extract_base_features(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Compute deterministic geographic, date, interaction, and lane columns."""
         feat = pd.DataFrame(index=df.index)
 
-        # 1. Geographic & Distance
         feat["distance"] = df["distance"].values
         feat["haversine_dist"] = haversine_distance(
             df["pickup_lat"].values,
@@ -82,7 +73,6 @@ class FeaturePipeline:
             df["delivery_lon"].values,
         )
 
-        # 2. Interactions & Ratios
         safe_distance = np.maximum(df["distance"].values, 1.0)
         feat["weight"] = df["weight"].values
         feat["market_index"] = df["market_index"].values
@@ -93,14 +83,12 @@ class FeaturePipeline:
             feat["quote_signal"] = df["quote_signal"].values
             feat["quote_x_dist"] = df["quote_signal"].values * df["distance"].values
 
-        # 3. Date features
         dates = pd.to_datetime(df["date"])
         feat["dayofweek"] = dates.dt.dayofweek.values
         feat["month"] = dates.dt.month.values
         feat["weekofyear"] = dates.dt.isocalendar().week.astype(int).values
         feat["dayofmonth"] = dates.dt.day.values
 
-        # 4. Categoricals & Lane
         feat["equipment"] = df["equipment"].astype(str).values
         feat["pickup"] = df["pickup"].astype(str).values
         feat["delivery"] = df["delivery"].astype(str).values
@@ -113,17 +101,10 @@ class FeaturePipeline:
         train_df: pd.DataFrame,
         y_train: pd.Series | np.ndarray,
     ) -> tuple[pd.DataFrame, np.ndarray, list[str]]:
-        """
-        Fit all encoders and statistics on train_df, and return train feature representations:
-        - X_train_lgb: pandas DataFrame with categorical dtypes and out-of-fold lane target encoding
-        - X_train_ridge: 2D numpy array scaled with equipment one-hot dummies
-        - lgb_feature_names: feature name list
-        """
         y_series = pd.Series(y_train).reset_index(drop=True)
         train_imputed = self._impute_numeric(train_df, is_train=True)
         base_feat = self._extract_base_features(train_imputed)
 
-        # Target encoding: Global mean and train-wide mapping
         self.global_target_mean_ = float(y_series.mean())
         lane_df = pd.DataFrame({"lane": base_feat["lane"], "target": y_series.values})
         lane_stats = lane_df.groupby("lane")["target"].agg(["count", "sum"])
@@ -132,7 +113,6 @@ class FeaturePipeline:
         )
         self.lane_target_mapping_ = smoothed_target.to_dict()
 
-        # Out-of-fold target encoding for train
         oof_target_enc = np.full(len(train_df), self.global_target_mean_, dtype=float)
         kf = KFold(n_splits=self.n_splits, shuffle=True, random_state=self.seed)
 
@@ -151,14 +131,12 @@ class FeaturePipeline:
 
         base_feat["lane_target_enc"] = oof_target_enc
 
-        # Store known categorical levels and convert categorical columns
         cat_cols = ["equipment", "pickup", "delivery", "lane"]
         for col in cat_cols:
             unique_levels = sorted(base_feat[col].unique().tolist())
             self.categories_[col] = unique_levels
             base_feat[col] = pd.Categorical(base_feat[col], categories=unique_levels)
 
-        # Ridge baseline features: [distance, weight, market_index, quote_signal, equipment dummies]
         self.ridge_numeric_cols_ = ["distance", "weight", "market_index"]
         if self.use_quote_signal:
             self.ridge_numeric_cols_.append("quote_signal")
@@ -176,28 +154,20 @@ class FeaturePipeline:
         return base_feat, X_train_ridge, self.lgb_feature_names_
 
     def transform(self, val_df: pd.DataFrame) -> tuple[pd.DataFrame, np.ndarray]:
-        """
-        Transform validation or test rows using statistics strictly learned from train.
-        No validation target values are ever seen or used.
-        """
         val_imputed = self._impute_numeric(val_df, is_train=False)
         base_feat = self._extract_base_features(val_imputed)
 
-        # Lane target encoding using learned train statistics
         base_feat["lane_target_enc"] = (
             base_feat["lane"].map(self.lane_target_mapping_).fillna(self.global_target_mean_).values
         )
 
-        # Categoricals mapped to train categories
         for col, levels in self.categories_.items():
             s = base_feat[col].astype(str)
             s_clean = s.where(s.isin(levels), other=np.nan)
             base_feat[col] = s_clean.astype(pd.CategoricalDtype(categories=levels))
 
-        # Reorder LGB columns to match train exactly
         X_val_lgb = base_feat[self.lgb_feature_names_].copy()
 
-        # Ridge features
         equipment_arr = base_feat[["equipment"]].astype(str)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", category=UserWarning)
@@ -218,10 +188,6 @@ def build_features(
     n_splits: int = TARGET_ENCODING_FOLDS,
     seed: int = 42,
 ) -> tuple[pd.DataFrame, pd.DataFrame, np.ndarray, np.ndarray, list[str], FeaturePipeline]:
-    """
-    Single function for feature extraction (Step 2):
-    Fits feature pipeline on train_df only and transforms validation rows without data leakage.
-    """
     pipeline = FeaturePipeline(
         use_quote_signal=use_quote_signal,
         smoothing=smoothing,

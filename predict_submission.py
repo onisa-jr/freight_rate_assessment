@@ -27,21 +27,14 @@ def generate_submission(
     seeds: list[int] = SEEDS,
     model_choice: str = "ensemble",
 ) -> None:
-    """
-    Train models across 5 seeds on the training set and generate final predictions for:
-    1. validation.csv -> validation_predictions.csv (12,000 loads)
-    2. december-chart-inputs.csv -> december_predictions.csv (31 loads)
-    """
     print(f"Loading training data from {train_path}...")
     train_df = pd.read_csv(train_path)
     val_df = pd.read_csv(val_path)
     dec_df = pd.read_csv(december_path)
 
-    # City coordinate mapping from train_df
     city_lat_map = train_df.groupby("pickup")["pickup_lat"].first().to_dict()
     city_lon_map = train_df.groupby("pickup")["pickup_lon"].first().to_dict()
 
-    # Enrich december_df with coordinates, default market_index, and quote_signal if missing
     dec_enriched = dec_df.copy()
     dec_enriched["pickup_lat"] = dec_enriched["pickup"].map(city_lat_map)
     dec_enriched["pickup_lon"] = dec_enriched["pickup"].map(city_lon_map)
@@ -67,7 +60,6 @@ def generate_submission(
 
     for seed in seeds:
         print(f"  Training seed {seed}...")
-        # 1. MLP Model
         if model_choice in ["mlp", "ensemble"]:
             mlp = MLPRegressorModel(
                 random_state=seed,
@@ -75,7 +67,6 @@ def generate_submission(
                 target_mode=target_mode,
                 use_quote_signal=use_quote_signal,
             )
-            # Train on 90% random split of train to allow early stopping
             split_idx = int(0.9 * len(train_df))
             tr_sub = train_df.iloc[:split_idx]
             val_sub = train_df.iloc[split_idx:]
@@ -88,7 +79,6 @@ def generate_submission(
                 val_preds_all.append(val_preds_mlp)
                 dec_preds_all.append(dec_preds_mlp)
 
-        # 2. LightGBM Model
         if model_choice in ["lightgbm", "ensemble"]:
             pipeline = FeaturePipeline(
                 use_quote_signal=use_quote_signal,
@@ -110,15 +100,12 @@ def generate_submission(
                 val_preds_all.append(val_preds_lgb)
                 dec_preds_all.append(dec_preds_lgb)
             elif model_choice == "ensemble":
-                # Average MLP and LightGBM predictions
                 val_preds_all.append(0.5 * val_preds_mlp + 0.5 * val_preds_lgb)
                 dec_preds_all.append(0.5 * dec_preds_mlp + 0.5 * dec_preds_lgb)
 
-    # Average across all seeds
     final_val_pred = np.mean(val_preds_all, axis=0)
     final_dec_pred = np.mean(dec_preds_all, axis=0)
 
-    # 1. Save validation_predictions.csv
     val_out = pd.DataFrame({
         "load_id": val_df["load_id"],
         "predicted_rate": np.round(final_val_pred, 2),
@@ -127,7 +114,6 @@ def generate_submission(
     val_out.to_csv(val_out_path, index=False)
     print(f"[Saved] {val_out_path} ({len(val_out)} rows)")
 
-    # 2. Save december_predictions.csv
     dec_out = dec_df.copy()
     dec_out["predicted_rate"] = np.round(final_dec_pred, 2)
     dec_out_path = output_dir / "december_predictions.csv"

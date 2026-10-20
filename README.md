@@ -26,16 +26,24 @@ A comprehensive data quality inspection was conducted without silently discardin
   * `market_index`: 374 missing values (0.78%).
   * *Handling*: Imputed strictly using the **median of the training split**. No validation or test set statistics were used.
 * **Geographic & Distance Audit**:
-  * Haversine distance from coordinates correlates highly with reported distance ($r = 0.9995$, median absolute difference 144.2 miles).
-  * **Coordinate Anomaly**: In 7.77% of rows (3,731 loads), the Haversine distance differed from reported distance by $>20\%$. For example, Richmond to Baltimore coordinates indicate $\approx 220$ miles whereas reported distance is 274 miles.
-  * *Handling*: Coordinates were identified as perturbed/synthetic. Rather than dropping valid loads, rows were **flagged**, and both reported `distance` and calculated `haversine_dist` were preserved as complementary features.
+  * Haversine distance is calculated between pickup coordinates $(\phi_1, \lambda_1)$ and delivery coordinates $(\phi_2, \lambda_2)$:
+    $$d_{\text{hav}} = 2 R \arcsin\left(\sqrt{\sin^2\left(\frac{\Delta \phi}{2}\right) + \cos(\phi_1)\cos(\phi_2)\sin^2\left(\frac{\Delta \lambda}{2}\right)}\right)$$
+    where $R = 3,958.8\text{ miles}$, $\Delta \phi = \phi_2 - \phi_1$, and $\Delta \lambda = \lambda_2 - \lambda_1$.
+  * Correlation with reported distance: $r = 0.9995$ with a median absolute difference of $144.2\text{ miles}$.
+  * **Coordinate Anomaly**: In 7.77% of rows (3,731 loads), the relative discrepancy exceeded 20%:
+    $$\Delta_{\text{rel}} = \frac{|d_{\text{hav}} - d_{\text{reported}}|}{\max(d_{\text{reported}}, 10^{-6})} > 0.20$$
+    For example, Richmond to Baltimore coordinates indicate $\approx 220\text{ miles}$ whereas reported road distance is $274\text{ miles}$.
+  * *Handling*: Coordinates were identified as perturbed/synthetic. Rather than dropping valid loads, rows were **flagged**, and both reported $d_{\text{reported}}$ and calculated $d_{\text{hav}}$ were preserved as complementary features.
 * **City Consistency**: All 64 pickup and 64 delivery cities map to exactly one persistent latitude/longitude pair with zero mismatches.
-* **Target (`posted_rate`)**:
+* **Target (`posted_rate`) Distribution**:
   * Positively skewed (skewness = 1.90), ranging from \$57.22 to \$25,533.00 (Mean: \$2,373.98, Median: \$2,030.76).
-  * No zero or negative rates found. Outliers (0.54% by IQR) were retained as legitimate long-haul heavy loads.
+  * Outlier detection via the interquartile range:
+    $$\text{Boundaries} = [Q_1 - 1.5 \cdot \text{IQR}, \quad Q_3 + 1.5 \cdot \text{IQR}]$$
+    Identified 260 loads (0.54%) as outliers. All rows were retained as legitimate heavy or long-haul loads.
 * **Leakage Verification**:
-  * Standalone `quote_signal` correlation with posted rate is low ($-0.0399$), but the interaction `quote_signal * distance` correlates at $r = 0.8987$.
-  * A configuration flag `USE_QUOTE_SIGNAL` (and CLI `--no-quote-signal`) allows toggling this signal if unavailable in production.
+  * Standalone `quote_signal` correlation with posted rate is low ($r = -0.0399$), but the interaction term correlates strongly ($r = 0.8987$):
+    $$\text{corr}(\text{quote\_signal} \times \text{distance}, \; \text{posted\_rate}) = 0.8987$$
+  * A configuration flag `USE_QUOTE_SIGNAL` (and CLI `--no-quote-signal`) allows toggling this signal if unavailable at prediction time.
 
 ---
 
@@ -44,18 +52,27 @@ A comprehensive data quality inspection was conducted without silently discardin
 All transformations and encoders are fit strictly on training splits and applied to validation/test sets:
 
 1. **Numeric Features**:
-   * Distance metrics: `distance`, `haversine_dist`.
-   * Log1p transforms: applied to `weight` and `distance` prior to scaling to normalize heavy right tails.
-   * Interactions: `weight_per_distance` (`weight / distance`), `dist_x_market` (`distance * market_index`), `quote_x_dist` (`quote_signal * distance`).
-   * Scaled with `StandardScaler` (fit on train only).
+   * Distance metrics: reported distance and Haversine distance $d_{\text{hav}}$.
+   * Heavy right-tail normalization:
+     $$x' = \log(1 + \max(x, 0)) \quad \text{for } x \in \{\text{weight}, \text{distance}\}$$
+   * Interactions and ratios:
+     $$\text{weight\_per\_distance} = \frac{\text{weight}}{\max(\text{distance}, 1.0)}, \quad \text{dist\_x\_market} = \text{distance} \times \text{market\_index}$$
+     $$\text{quote\_x\_dist} = \text{quote\_signal} \times \text{distance}$$
+   * Scaled with `StandardScaler` (fit strictly on the training set):
+     $$z = \frac{x - \mu_{\text{train}}}{\sigma_{\text{train}}}$$
 2. **Direction & Geography**:
-   * Vectorized initial forward bearing azimuth (0°–360°) computed between pickup and delivery coordinates.
+   * Vectorized forward compass bearing (initial azimuth $\theta \in [0^\circ, 360^\circ)$):
+     $$\theta = \left(\operatorname{atan2}\left(\sin(\Delta \lambda)\cos(\phi_2), \; \cos(\phi_1)\sin(\phi_2) - \sin(\phi_1)\cos(\phi_2)\cos(\Delta \lambda)\right) \cdot \frac{180^\circ}{\pi} + 360^\circ\right) \bmod 360^\circ$$
 3. **Temporal Features**:
-   * `dayofweek`, `month`, `weekofyear`, `dayofmonth`.
+   * Discrete Calendar Indicators: `dayofweek`, `month`, `weekofyear`, `dayofmonth`.
 4. **Categorical Encodings & Entity Embeddings**:
-   * `equipment`, `pickup`, `delivery`, and `lane` (`pickup->delivery`).
-   * **For LightGBM**: Out-of-fold smoothed lane target encoding inside train ($K=5$ folds with smoothing parameter $m=10.0$); validation rows use training-wide stats.
-   * **For PyTorch MLP**: Learned entity embeddings for all categoricals with dimension $\min(16, \lceil n_{\text{categories}} / 2 \rceil)$ and a reserved index for unseen categories.
+   * Categorical inputs: `equipment`, `pickup`, `delivery`, and `lane` ($\text{pickup} \to \text{delivery}$).
+   * **For LightGBM**: Out-of-fold smoothed lane target encoding inside train ($K=5$ folds, smoothing parameter $m=10.0$):
+     $$\hat{y}_{\text{lane}}(c) = \frac{\sum_{i \in \text{lane } c} y_i + m \cdot \bar{y}_{\text{train}}}{n_c + m}$$
+     Validation rows map strictly using the global training statistics; unseen lanes fall back to $\bar{y}_{\text{train}}$.
+   * **For PyTorch MLP**: Learned entity embeddings for all categoricals with embedding dimension:
+     $$d_{\text{emb}} = \min\left(16, \; \left\lceil \frac{n_{\text{categories}}}{2} \right\rceil\right)$$
+     An extra index $n_{\text{categories}}$ is reserved for unseen categories in validation.
 
 ---
 
@@ -74,6 +91,21 @@ Three model architectures were tested:
 1. **Ridge Baseline**: Linear regression on scaled numerics and equipment one-hot dummies.
 2. **LightGBM Regressor**: Gradient boosted trees with fixed sensible defaults (2,000 estimators, early stopping 50 rounds, lr=0.05, num_leaves=31, subsample=0.8).
 3. **PyTorch MLP**: Deep neural network with categorical embeddings, standardized numerics, SmoothL1 (Huber) loss, AdamW ($\text{lr}=10^{-3}$, $\text{weight\_decay}=10^{-4}$), ReduceLROnPlateau, and early stopping.
+
+### Loss Function & Target Standardization (PyTorch MLP)
+The MLP models standardized target variables ($z_y$) using Huber loss:
+$$\mathcal{L}_{\beta}(z, \hat{z}) = \begin{cases} \frac{1}{2}(z - \hat{z})^2, & \text{if } |z - \hat{z}| < 1 \\ |z - \hat{z}| - \frac{1}{2}, & \text{otherwise} \end{cases}$$
+
+When modeling rate-per-mile ($y_{\text{rpm}} = \frac{\text{posted\_rate}}{\text{distance}}$), predictions are inverted back to original dollars:
+$$\widehat{\text{posted\_rate}} = (\hat{z} \cdot \sigma_{\text{train}} + \mu_{\text{train}}) \times \text{distance}$$
+
+### Evaluation Metrics
+All metrics are evaluated in original dollar units:
+$$\text{MAE} = \frac{1}{N}\sum_{i=1}^N |y_i - \hat{y}_i|$$
+$$\text{RMSE} = \sqrt{\frac{1}{N}\sum_{i=1}^N (y_i - \hat{y}_i)^2}$$
+$$\text{MAPE} = \frac{100\%}{N}\sum_{i=1}^N \frac{|y_i - \hat{y}_i|}{\max(y_i, 10^{-4})}$$
+$$\text{sMAPE} = \frac{100\%}{N}\sum_{i=1}^N \frac{2|y_i - \hat{y}_i|}{|y_i| + |\hat{y}_i| + 10^{-4}}$$
+$$R^2 = 1 - \frac{\sum_{i=1}^N (y_i - \hat{y}_i)^2}{\sum_{i=1}^N (y_i - \bar{y})^2}$$
 
 ### Multi-Seed Summary Table (5 Seeds: 0, 1, 2, 3, 4)
 

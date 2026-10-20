@@ -21,7 +21,6 @@ from models import (
 
 
 def compute_metrics(y_true: np.ndarray, y_pred: np.ndarray) -> dict[str, float]:
-    """Compute MAE, RMSE, MAPE, sMAPE, R2 in original dollar units."""
     y_true_arr = np.asarray(y_true, dtype=float)
     y_pred_arr = np.asarray(y_pred, dtype=float)
 
@@ -55,9 +54,6 @@ def run_single_evaluation(
     use_quote_signal: bool = USE_QUOTE_SIGNAL,
     mlp_max_epochs: int = 200,
 ) -> tuple[list[dict], dict[str, pd.Series], tuple[np.ndarray, np.ndarray], dict[str, list[float]]]:
-    """
-    Run evaluation for Ridge, LightGBM, and MLP on a given split and seed.
-    """
     y_train_raw = train_df["posted_rate"].values
     y_val_raw = val_df["posted_rate"].values
     dist_train = train_df["distance"].values
@@ -66,7 +62,6 @@ def run_single_evaluation(
     y_train_trans = transform_target(y_train_raw, dist_train, target_mode=target_mode)
     y_val_trans = transform_target(y_val_raw, dist_val, target_mode=target_mode)
 
-    # Build features for Ridge and LightGBM
     X_train_lgb, X_val_lgb, X_train_ridge, X_val_ridge, _, _ = build_features(
         train_df=train_df,
         val_df=val_df,
@@ -78,7 +73,6 @@ def run_single_evaluation(
     results = []
     importances_dict = {}
 
-    # 1. Baseline: Ridge
     ridge = RidgeBaseline(alpha=1.0, random_state=seed)
     ridge.fit(X_train_ridge, y_train_trans)
     pred_val_ridge_trans = ridge.predict(X_val_ridge)
@@ -96,7 +90,6 @@ def run_single_evaluation(
         "best_iteration": None,
     })
 
-    # 2. Main: LightGBM Regressor
     lgb_model = LightGBMModel(random_state=seed)
     lgb_model.fit(
         X_train=X_train_lgb,
@@ -120,7 +113,6 @@ def run_single_evaluation(
     })
     importances_dict["lightgbm"] = lgb_model.get_feature_importances(importance_type="gain")
 
-    # 3. Neural Network: MLPRegressorModel
     mlp_model = MLPRegressorModel(
         random_state=seed,
         max_epochs=mlp_max_epochs,
@@ -156,9 +148,6 @@ def evaluate_all(
     use_quote_signal: bool = USE_QUOTE_SIGNAL,
     mlp_max_epochs: int = 200,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.Series, tuple[np.ndarray, np.ndarray], dict[str, list[float]]]:
-    """
-    Run full 5-seed evaluation for Protocol A and Protocol B across Ridge, LightGBM, and MLP.
-    """
     all_metrics = []
     lgb_importances = []
     scatter_data = None
@@ -167,7 +156,6 @@ def evaluate_all(
     b_train_df, b_val_df = split_protocol_b(df, train_date_fraction=0.8)
 
     for seed in seeds:
-        # Protocol A: Random split
         a_train_df, a_val_df = split_protocol_a(df, seed=seed, test_size=0.2)
         res_a, imp_a, _, hist_a = run_single_evaluation(
             train_df=a_train_df,
@@ -181,7 +169,6 @@ def evaluate_all(
         all_metrics.extend(res_a)
         lgb_importances.append(imp_a["lightgbm"])
 
-        # Protocol B: Time split
         res_b, imp_b, scatter_b, hist_b = run_single_evaluation(
             train_df=b_train_df,
             val_df=b_val_df,
@@ -218,10 +205,8 @@ def generate_plots(
     mlp_history: dict[str, list[float]] | None = None,
     output_dir: Path = RESULTS_DIR,
 ) -> None:
-    """Generate and save all visualization plots including MLP curves."""
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # 1. MAE per seed for each model, per protocol
     fig, axes = plt.subplots(1, 2, figsize=(14, 5), sharey=True)
     protocols = [("protocol_a", "Protocol A (Random Split)"), ("protocol_b", "Protocol B (Time-based Split)")]
 
@@ -251,7 +236,6 @@ def generate_plots(
     plt.savefig(mae_plot_path, dpi=200)
     plt.close()
 
-    # 2. Feature Importance (gain) averaged across seeds
     top_n = min(15, len(avg_importance))
     top_importances = avg_importance.head(top_n)[::-1]
 
@@ -266,7 +250,6 @@ def generate_plots(
     plt.savefig(imp_plot_path, dpi=200)
     plt.close()
 
-    # 3. Predicted vs Actual scatter plot for LightGBM
     y_actual, y_predicted = scatter_data
     plt.figure(figsize=(7, 7))
     plt.scatter(y_actual, y_predicted, alpha=0.25, s=15, color="#2CA02C", edgecolors="none")
@@ -283,7 +266,6 @@ def generate_plots(
     plt.savefig(scatter_plot_path, dpi=200)
     plt.close()
 
-    # 4. MLP Training Curve (train vs val loss) for one seed
     if mlp_history and "train_loss" in mlp_history and len(mlp_history["train_loss"]) > 0:
         plt.figure(figsize=(8, 5))
         epochs = list(range(1, len(mlp_history["train_loss"]) + 1))
@@ -301,13 +283,6 @@ def generate_plots(
 
 
 def generate_extended_summary(summary_df: pd.DataFrame) -> str:
-    """
-    Generate the extended closing summary:
-    - Does MLP beat LightGBM on mean MAE?
-    - How does its seed-to-seed std compare?
-    - Is the A vs B gap larger or smaller than for LightGBM?
-    """
-    # Extract metrics for Protocol A & B
     lgb_a_mae = summary_df.loc[("protocol_a", "lightgbm"), ("MAE", "mean")]
     lgb_b_mae = summary_df.loc[("protocol_b", "lightgbm"), ("MAE", "mean")]
     lgb_b_std = summary_df.loc[("protocol_b", "lightgbm"), ("MAE", "std")]
@@ -320,7 +295,6 @@ def generate_extended_summary(summary_df: pd.DataFrame) -> str:
 
     ridge_b_mae = summary_df.loc[("protocol_b", "ridge"), ("MAE", "mean")]
 
-    # Comparisons
     mlp_beats_lgb = mlp_b_mae < lgb_b_mae
     lgb_gap = lgb_b_mae - lgb_a_mae
     mlp_gap = mlp_b_mae - mlp_a_mae

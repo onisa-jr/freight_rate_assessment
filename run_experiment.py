@@ -77,14 +77,11 @@ def main() -> None:
     print(f"Output directory: {args.output_dir}")
     print("=" * 80)
 
-    # 1. Load data
     df = load_data(str(args.data_path), parse_dates=True, sample_rows=args.sample_rows, random_state=42)
 
-    # 2. Run Step 1 data checks
     if not args.skip_data_checks:
         run_data_checks(df, use_quote_signal=use_quote_signal)
 
-    # 3. Step 4: Run evaluation across protocols and seeds
     print("\nRunning multi-seed evaluation across Protocol A and Protocol B (Ridge, LightGBM, MLP)...")
     seed_metrics_df, summary_df, avg_importance, scatter_data, mlp_history = evaluate_all(
         df=df,
@@ -94,7 +91,6 @@ def main() -> None:
         mlp_max_epochs=args.mlp_max_epochs,
     )
 
-    # 4. Step 5: Save results
     args.output_dir.mkdir(parents=True, exist_ok=True)
     metrics_csv_path = args.output_dir / "seed_metrics.csv"
     seed_metrics_df.to_csv(metrics_csv_path, index=False)
@@ -103,7 +99,6 @@ def main() -> None:
     summary_csv_path = args.output_dir / "summary_metrics.csv"
     summary_df.to_csv(summary_csv_path)
 
-    # 5. Print Summary Table
     print("\n" + "=" * 80)
     print("SUMMARY METRICS TABLE (across seeds)")
     print("=" * 80)
@@ -112,7 +107,6 @@ def main() -> None:
     print(summary_df.round(3))
     print("=" * 80)
 
-    # 6. Generate and save required plots
     print("\nGenerating visualization plots...")
     generate_plots(
         seed_metrics_df=seed_metrics_df,
@@ -127,7 +121,6 @@ def main() -> None:
     print("  - predicted_vs_actual.png")
     print("  - training_curve_mlp.png")
 
-    # 7. Print closing summary
     print("\n" + "=" * 80)
     print("EXECUTIVE SUMMARY (Extended with MLP)")
     print("=" * 80)

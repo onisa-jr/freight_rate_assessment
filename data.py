@@ -12,13 +12,11 @@ def haversine_distance(
     lon2: np.ndarray | pd.Series | float,
     radius_miles: float = EARTH_RADIUS_MILES,
 ) -> np.ndarray:
-    """Compute great-circle distance between two points in miles using Haversine formula."""
     lat1_rad, lon1_rad, lat2_rad, lon2_rad = np.radians(lat1), np.radians(lon1), np.radians(lat2), np.radians(lon2)
     dlat = lat2_rad - lat1_rad
     dlon = lon2_rad - lon1_rad
 
     a = np.sin(dlat / 2.0) ** 2 + np.cos(lat1_rad) * np.cos(lat2_rad) * np.sin(dlon / 2.0) ** 2
-    # Clip for numerical stability
     a = np.clip(a, 0.0, 1.0)
     c = 2.0 * np.arcsin(np.sqrt(a))
     return radius_miles * c
@@ -30,7 +28,6 @@ def calculate_bearing(
     lat2: np.ndarray | pd.Series | float,
     lon2: np.ndarray | pd.Series | float,
 ) -> np.ndarray:
-    """Compute initial compass bearing (forward azimuth) in degrees [0, 360)."""
     lat1_rad, lon1_rad, lat2_rad, lon2_rad = np.radians(lat1), np.radians(lon1), np.radians(lat2), np.radians(lon2)
     dlon = lon2_rad - lon1_rad
 
@@ -47,7 +44,6 @@ def load_data(
     sample_rows: int | None = None,
     random_state: int = 42,
 ) -> pd.DataFrame:
-    """Load dataset, optionally parse dates and sample rows for quick smoke checks."""
     df = pd.read_csv(path)
     if parse_dates and "date" in df.columns:
         df["date"] = pd.to_datetime(df["date"])
@@ -59,17 +55,8 @@ def load_data(
 
 
 def run_data_checks(df: pd.DataFrame, use_quote_signal: bool = USE_QUOTE_SIGNAL) -> dict:
-    """
-    Run data checks as specified in Step 1:
-    1. Row count, date range, nulls per column.
-    2. Haversine distance vs reported distance (correlation, median diff, % differing > 20%). Flag suspicious rows.
-    3. City name to lat/lon consistency check.
-    4. posted_rate distribution (skew, outliers, zeros, negatives).
-    5. Leakage check for quote_signal and market_index.
-    """
     report = {}
 
-    # 1. Basic properties
     n_rows = len(df)
     min_date = df["date"].min() if "date" in df.columns else None
     max_date = df["date"].max() if "date" in df.columns else None
@@ -78,7 +65,6 @@ def run_data_checks(df: pd.DataFrame, use_quote_signal: bool = USE_QUOTE_SIGNAL)
     report["date_range"] = (str(min_date), str(max_date))
     report["null_counts"] = null_counts
 
-    # 2. Haversine vs distance
     df_calc = df.copy()
     df_calc["haversine_dist"] = haversine_distance(
         df_calc["pickup_lat"], df_calc["pickup_lon"], df_calc["delivery_lat"], df_calc["delivery_lon"]
@@ -90,7 +76,6 @@ def run_data_checks(df: pd.DataFrame, use_quote_signal: bool = USE_QUOTE_SIGNAL)
     median_abs_diff = float(dist_diff.median())
     frac_diff_gt_20 = float((rel_diff > 0.20).mean())
 
-    # Flag suspicious rows
     suspicious_mask = rel_diff > 0.20
     n_suspicious = int(suspicious_mask.sum())
     suspicious_sample = (
@@ -107,7 +92,6 @@ def run_data_checks(df: pd.DataFrame, use_quote_signal: bool = USE_QUOTE_SIGNAL)
         "suspicious_sample": suspicious_sample,
     }
 
-    # 3. City to lat/lon consistency check
     pickup_unique_coords = df.groupby("pickup")[["pickup_lat", "pickup_lon"]].nunique().max().to_dict()
     delivery_unique_coords = df.groupby("delivery")[["delivery_lat", "delivery_lon"]].nunique().max().to_dict()
 
@@ -127,7 +111,6 @@ def run_data_checks(df: pd.DataFrame, use_quote_signal: bool = USE_QUOTE_SIGNAL)
         "pickup_delivery_mismatches": city_mismatches,
     }
 
-    # 4. posted_rate distribution
     pr = df["posted_rate"]
     q1 = pr.quantile(0.25)
     q3 = pr.quantile(0.75)
@@ -149,7 +132,6 @@ def run_data_checks(df: pd.DataFrame, use_quote_signal: bool = USE_QUOTE_SIGNAL)
         "iqr_outlier_pct": float(outlier_count / n_rows * 100.0),
     }
 
-    # 5. Leakage check
     rpm = df["posted_rate"] / np.maximum(df["distance"], 1e-6)
     corr_qs_rate = float(df["quote_signal"].corr(df["posted_rate"])) if "quote_signal" in df else np.nan
     corr_qs_rpm = float(df["quote_signal"].corr(rpm)) if "quote_signal" in df else np.nan
@@ -170,7 +152,6 @@ def run_data_checks(df: pd.DataFrame, use_quote_signal: bool = USE_QUOTE_SIGNAL)
         "corr_quote_x_dist_vs_posted_rate": corr_qs_dist_rate,
     }
 
-    # Print short human-readable report
     print("=" * 70)
     print("DATA CHECKS REPORT (Step 1)")
     print("=" * 70)
@@ -207,11 +188,6 @@ def split_protocol_a(
     seed: int,
     test_size: float = 0.2,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """
-    Protocol A (Random split):
-    Random 80/20 train/validation split shuffled with the given seed.
-    Guarantees no index overlap and exact reproducibility per seed.
-    """
     train_df, val_df = train_test_split(df, test_size=test_size, random_state=seed, shuffle=True)
     return train_df.copy().reset_index(drop=True), val_df.copy().reset_index(drop=True)
 
@@ -220,11 +196,6 @@ def split_protocol_b(
     df: pd.DataFrame,
     train_date_fraction: float = 0.8,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """
-    Protocol B (Time-based split):
-    Train on earliest 80% of dates and validate on latest 20% of dates.
-    Deterministic across seeds; every validation date is strictly later than every training date.
-    """
     if not np.issubdtype(df["date"].dtype, np.datetime64):
         dates = pd.to_datetime(df["date"])
     else:

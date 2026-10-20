@@ -33,7 +33,6 @@ from data import calculate_bearing, haversine_distance
 
 
 def seed_everything(seed: int) -> torch.Generator:
-    """Seed python random, numpy, and torch for deterministic execution."""
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -50,7 +49,6 @@ def transform_target(
     distance: pd.Series | np.ndarray,
     target_mode: str = "raw",
 ) -> np.ndarray:
-    """Transform target based on configured target mode."""
     y_arr = np.asarray(y, dtype=float)
     dist_arr = np.maximum(np.asarray(distance, dtype=float), 1.0)
 
@@ -69,7 +67,6 @@ def inverse_transform_target(
     distance: pd.Series | np.ndarray,
     target_mode: str = "raw",
 ) -> np.ndarray:
-    """Invert target transformation back to dollar units for evaluation."""
     pred_arr = np.asarray(pred, dtype=float)
     dist_arr = np.maximum(np.asarray(distance, dtype=float), 1.0)
 
@@ -84,8 +81,6 @@ def inverse_transform_target(
 
 
 class RidgeBaseline:
-    """Baseline linear model on scaled numeric features and equipment dummies."""
-
     def __init__(self, alpha: float = 1.0, random_state: int = 42):
         self.alpha = alpha
         self.random_state = random_state
@@ -101,8 +96,6 @@ class RidgeBaseline:
 
 
 class LightGBMModel:
-    """Main LightGBM model with fixed sensible defaults and early stopping."""
-
     def __init__(self, random_state: int = 42, **kwargs):
         self.random_state = random_state
         params = dict(LGBM_PARAMS)
@@ -145,13 +138,6 @@ class LightGBMModel:
 
 
 class MLPNetwork(nn.Module):
-    """
-    Fixed PyTorch architecture for tabular regression:
-    Concatenate numeric + embeddings -> Linear(128) -> ReLU -> Dropout(0.1)
-    -> Linear(64) -> ReLU -> Dropout(0.1) -> Linear(1)
-    Optional BatchNorm or LayerNorm after first layer.
-    """
-
     def __init__(
         self,
         n_numeric: int,
@@ -191,15 +177,6 @@ class MLPNetwork(nn.Module):
 
 
 class MLPRegressorModel:
-    """
-    Neural Network (MLP) for Freight Rate Estimation.
-    - Standardizes numeric features with StandardScaler fit on train only (log1p applied to weight and distance).
-    - Learned embeddings for categoricals (equipment, pickup, delivery, lane, dayofweek, month).
-    - Unseen categories in validation map to reserved index.
-    - Trains with AdamW, Huber (SmoothL1) loss, ReduceLROnPlateau, and early stopping.
-    - All predictions unstandardized and converted back to dollar units.
-    """
-
     def __init__(
         self,
         random_state: int = 42,
@@ -222,7 +199,6 @@ class MLPRegressorModel:
         self.target_mode = target_mode
         self.use_quote_signal = use_quote_signal
 
-        # Learned preprocessing artifacts (train only)
         self.scaler_: StandardScaler | None = None
         self.medians_: dict[str, float] = {}
         self.cat_mappings_: dict[str, dict[Any, int]] = {}
@@ -232,7 +208,6 @@ class MLPRegressorModel:
         self.target_mean_: float = 0.0
         self.target_std_: float = 1.0
 
-        # Trained model and artifacts
         self.model: MLPNetwork | None = None
         self.best_iteration_: int | None = None
         self.history_: dict[str, list[float]] = {"train_loss": [], "val_loss": []}
@@ -242,10 +217,8 @@ class MLPRegressorModel:
         df: pd.DataFrame,
         is_train: bool = False,
     ) -> tuple[np.ndarray, np.ndarray]:
-        """Extract and format standardized numeric and indexed categorical matrices."""
         df_work = df.copy()
 
-        # 1. Impute numerics using train medians
         numeric_impute_cols = ["weight", "market_index", "distance"]
         if self.use_quote_signal and "quote_signal" in df_work.columns:
             numeric_impute_cols.append("quote_signal")
@@ -259,7 +232,6 @@ class MLPRegressorModel:
             if col in df_work.columns:
                 df_work[col] = df_work[col].fillna(self.medians_.get(col, 0.0))
 
-        # 2. Categoricals: equipment, pickup, delivery, lane, dayofweek, month
         dates = pd.to_datetime(df_work["date"])
         lane_series = df_work["pickup"].astype(str) + "->" + df_work["delivery"].astype(str)
 
@@ -285,8 +257,7 @@ class MLPRegressorModel:
                 unique_vals = sorted(cat_dict[col].unique().tolist())
                 n_cats = len(unique_vals)
                 mapping = {val: idx for idx, val in enumerate(unique_vals)}
-                unseen_idx = n_cats  # Reserved index for unseen categories
-                # Embedding dimension = min(16, ceil(n_categories / 2))
+                unseen_idx = n_cats
                 emb_dim = min(16, max(2, int(math.ceil(n_cats / 2))))
 
                 self.cat_mappings_[col] = mapping
@@ -305,8 +276,6 @@ class MLPRegressorModel:
 
         x_cat = np.column_stack(cat_arrays)
 
-        # 3. Numeric features (excluding target-encoded lane):
-        # Apply log1p to weight and distance before scaling
         dist = df_work["distance"].values.astype(float)
         weight = df_work["weight"].values.astype(float)
         dist_log1p = np.log1p(np.maximum(dist, 0.0))
@@ -367,16 +336,8 @@ class MLPRegressorModel:
         val_df: pd.DataFrame,
         y_val_raw: pd.Series | np.ndarray,
     ) -> MLPRegressorModel:
-        """
-        Fit MLP on train_df and validate on val_df:
-        - Seed random, numpy, and PyTorch.
-        - Target standardized using train mean and std.
-        - AdamW optimizer, Huber (SmoothL1) loss, ReduceLROnPlateau.
-        - Early stopping with patience restoring best weights.
-        """
         seed_generator = seed_everything(self.random_state)
 
-        # 1. Transform target to target_mode and compute train standardization stats
         dist_train = train_df["distance"].values
         dist_val = val_df["distance"].values
 
@@ -391,11 +352,9 @@ class MLPRegressorModel:
         y_tr_std = (y_tr_trans - self.target_mean_) / self.target_std_
         y_va_std = (y_va_trans - self.target_mean_) / self.target_std_
 
-        # 2. Extract features
         x_tr_num, x_tr_cat = self._extract_features(train_df, is_train=True)
         x_va_num, x_va_cat = self._extract_features(val_df, is_train=False)
 
-        # 3. PyTorch Datasets & DataLoaders
         train_dataset = TensorDataset(
             torch.from_numpy(x_tr_num),
             torch.from_numpy(x_tr_cat),
@@ -413,7 +372,6 @@ class MLPRegressorModel:
             drop_last=False,
         )
 
-        # 4. Initialize Network, Loss, Optimizer, Scheduler
         self.model = MLPNetwork(
             n_numeric=x_tr_num.shape[1],
             cat_cardinalities=self.cat_cardinalities_,
@@ -421,7 +379,7 @@ class MLPRegressorModel:
             norm_type=self.norm_type,
         )
 
-        criterion = nn.SmoothL1Loss(beta=1.0)  # Huber loss
+        criterion = nn.SmoothL1Loss(beta=1.0)
         optimizer = torch.optim.AdamW(self.model.parameters(), lr=self.lr, weight_decay=self.weight_decay)
         scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
             optimizer, mode="min", factor=MLP_LR_FACTOR, patience=MLP_LR_PATIENCE
@@ -434,7 +392,6 @@ class MLPRegressorModel:
 
         self.history_ = {"train_loss": [], "val_loss": []}
 
-        # 5. Training loop
         for epoch in range(1, self.max_epochs + 1):
             self.model.train()
             batch_losses = []
@@ -449,7 +406,6 @@ class MLPRegressorModel:
             train_loss = float(np.mean(batch_losses))
             self.history_["train_loss"].append(train_loss)
 
-            # Validation loss
             self.model.eval()
             with torch.no_grad():
                 val_pred = self.model(val_num_tensor, val_cat_tensor)
@@ -458,7 +414,6 @@ class MLPRegressorModel:
 
             scheduler.step(val_loss)
 
-            # Check early stopping
             if val_loss < best_val_loss - 1e-5:
                 best_val_loss = val_loss
                 best_epoch = epoch
@@ -469,13 +424,11 @@ class MLPRegressorModel:
                 if patience_counter >= self.patience:
                     break
 
-        # Restore best weights
         self.model.load_state_dict(best_weights)
         self.best_iteration_ = best_epoch
         return self
 
     def predict(self, df: pd.DataFrame, distance: pd.Series | np.ndarray | None = None) -> np.ndarray:
-        """Predict posted_rate in dollar units."""
         if self.model is None:
             raise RuntimeError("Model has not been trained yet. Call fit() first.")
 
@@ -488,9 +441,6 @@ class MLPRegressorModel:
         with torch.no_grad():
             pred_std = self.model(torch.from_numpy(x_num), torch.from_numpy(x_cat)).numpy()
 
-        # Unstandardize prediction
         pred_trans = pred_std * self.target_std_ + self.target_mean_
-
-        # Invert target transform to return dollars
         pred_dollars = inverse_transform_target(pred_trans, distance, target_mode=self.target_mode)
         return pred_dollars
