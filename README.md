@@ -12,7 +12,7 @@ This repository provides an end-to-end, reproducible machine learning pipeline t
 * **Deliverables**:
   1. `validation_predictions.csv`: Filled predictions for all 12,000 loads (`load_id,predicted_rate`).
   2. `december_predictions.csv` & `scorer_results/candidate_december.png`: Predicted rate curves for 31 December benchmark shipments.
-  3. Multi-seed evaluation results, test suite, and pipeline source code.
+  3. Multi-seed evaluation results, visualizations, and pipeline source code.
 
 ---
 
@@ -135,32 +135,11 @@ Output of `assesiment/score.py` showing daily predicted rates for December shipm
 
 ---
 
-## 8. Targeted Unit Tests
-
-The test suite in [`tests/test_pipeline.py`](file:///home/onisajr/Downloads/freight_rate_assessment/tests/test_pipeline.py) contains 9 targeted property tests running on tiny synthetic data:
-
-1. **Haversine Distance**: Accurate distance for known city coordinates (NYC to LA $\approx 2445.6$ miles).
-2. **Random Split Reproducibility**: Exact reproducibility and zero index overlap between train and validation.
-3. **Time Split Order**: Validation dates strictly greater than training dates ($t_{\text{val}} > t_{\text{train}}$).
-4. **Target Encoding Leakage**: Invariance of validation encodings to validation target values.
-5. **End-to-End Pipeline Smoke Test**: Runs `run_experiment.py` on 500 rows for 2 seeds across all 3 models.
-6. **MLP Unseen Categories**: Verifies unseen validation categories map to the reserved embedding index without error.
-7. **MLP Preprocessor Leakage**: Verifies scaler means and target standardization statistics come strictly from train.
-8. **MLP Determinism**: Verifies identical predictions given the same random seed.
-9. **Dollar Inversion**: Verifies rate-per-mile predictions multiply correctly back to dollars.
-
-Run tests:
-```bash
-pytest tests/test_pipeline.py -v
-```
-
----
-
-## 9. How to Run
+## 8. How to Run
 
 ### Install Dependencies
 ```bash
-pip install -r requirements.txt  # Or: pip install torch lightgbm scikit-learn pandas numpy matplotlib pytest
+pip install torch lightgbm scikit-learn pandas numpy matplotlib
 ```
 
 ### Run the 5-Seed Experiment
