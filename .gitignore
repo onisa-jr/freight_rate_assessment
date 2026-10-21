@@ -3,4 +3,5 @@ __pycache__/**
 tests/
 pytest.ini
 scorer_results/
+onisa_mapunda_freight_rate_pred_report.pdf
 
